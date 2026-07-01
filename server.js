@@ -7,48 +7,81 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Supabase সংযোগ
 const supabaseUrl = 'https://kbgzexismbfouhaueayv.supabase.co';
 const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtiZ3pleGlzbWJmb3VoYXVlYXl2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5MTcxOTAsImV4cCI6MjA5ODQ5MzE5MH0.RiyWDCTniDXriq3gCgqSOOiP6YGw0diaPvfg5pP-J9g';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// ✅ WinGo থেকে ডাটা আনা (Headers সহ)
+// ✅ WinGo Data Fetch - Proxy Method
 async function fetchWingoData() {
     try {
-        console.log('📡 Fetching from WinGo API...');
-        const response = await axios.get(
-            'https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json',
-            {
-                timeout: 15000,
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'application/json, text/plain, */*',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Referer': 'https://www.google.com/',
-                    'Origin': 'https://draw.ar-lottery01.com'
-                }
+        console.log('📡 Fetching WinGo data...');
+        
+        // Multiple methods চেষ্টা
+        const methods = [
+            async () => {
+                // Method 1: Direct with headers
+                return await axios.get(
+                    'https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json',
+                    {
+                        timeout: 10000,
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                            'Accept': 'application/json, text/plain, */*',
+                            'Referer': 'https://www.wingo.com/',
+                            'Origin': 'https://www.wingo.com'
+                        }
+                    }
+                );
+            },
+            async () => {
+                // Method 2: AllOrigins Proxy
+                const targetUrl = 'https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json';
+                const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
+                return await axios.get(proxyUrl, { timeout: 15000 });
             }
-        );
-        console.log('✅ WinGo API response received');
-        const items = response.data?.data?.list || [];
-        console.log(`📊 Found ${items.length} records`);
+        ];
+        
+        let response = null;
+        for (const method of methods) {
+            try {
+                response = await method();
+                if (response && response.status === 200) {
+                    console.log('✅ Success with method');
+                    break;
+                }
+            } catch (e) {
+                console.log('Method failed, trying next...');
+                continue;
+            }
+        }
+        
+        if (!response || response.status !== 200) {
+            throw new Error('All methods failed');
+        }
+        
+        // ডাটা পার্স করুন
+        let data = response.data;
+        if (typeof data === 'string') {
+            data = JSON.parse(data);
+        }
+        
+        const items = data?.data?.list || [];
+        console.log(`✅ Found ${items.length} records`);
+        
         return items.map(item => ({
             issue: String(item.issueNumber || item.issue || ''),
             number: String(item.number || '--')
         })).filter(r => r.issue);
+        
     } catch (error) {
-        console.error('❌ Fetch error:', error.message);
-        if (error.response) {
-            console.error('Status:', error.response.status);
-        }
+        console.error('❌ All fetch methods failed:', error.message);
         return [];
     }
 }
 
-// API Endpoints
+// API Endpoints (আগের মতো)
 app.post('/api/sync', async (req, res) => {
     try {
-        console.log('🔄 Syncing data...');
         const records = await fetchWingoData();
         let added = 0;
         for (const record of records) {
@@ -58,10 +91,8 @@ app.post('/api/sync', async (req, res) => {
                         { onConflict: 'issue' });
             if (!error) added++;
         }
-        console.log(`✅ Synced: ${added} new records`);
         res.json({ success: true, added, total: records.length });
     } catch (error) {
-        console.error('Sync error:', error.message);
         res.status(500).json({ error: error.message });
     }
 });
@@ -119,14 +150,14 @@ app.get('/', (req, res) => {
     res.json({ 
         status: '🚀 WinGo Analyzer API is running!',
         endpoints: {
-            sync: 'POST /api/sync',
-            records: 'GET /api/records',
-            analysis: 'GET /api/analysis'
+            sync: 'POST /api/sync - Sync data from WinGo',
+            records: 'GET /api/records - Get all records',
+            analysis: 'GET /api/analysis - Get 4,9 analysis'
         }
     });
 });
 
-// ⏰ Auto-sync every 30 seconds
+// ⏰ Auto-sync
 setInterval(async () => {
     try {
         const records = await fetchWingoData();
@@ -140,7 +171,7 @@ setInterval(async () => {
         }
         if (added > 0) console.log(`🔄 Auto-sync: ${added} new records`);
     } catch (error) {}
-}, 30000);
+}, 60000); // ১ মিনিটে ১ বার
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
