@@ -13,32 +13,82 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 const TABLE = 'wingo_records';
 const MAX_RECORDS = 500;
 
-// ======================== WinGo ডাটা ফেচ ========================
-async function fetchWingoData() {
-    try {
-        const res = await axios.get(
-            'https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json',
-            {
+// ======================== 🔥 Proxy + Retry দিয়ে WinGo ডাটা ফেচ ========================
+async function fetchWingoData(retries = 3) {
+    const methods = [
+        // মেথড ১: CorsProxy
+        async () => {
+            const proxyUrl = 'https://corsproxy.io/?';
+            const target = 'https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json';
+            const response = await axios.get(proxyUrl + encodeURIComponent(target), {
                 timeout: 15000,
-                headers: {
+                headers: { 
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Cache-Control': 'no-cache'
+                    'Accept': 'application/json'
                 }
+            });
+            return response.data;
+        },
+        // মেথড ২: AllOrigins
+        async () => {
+            const proxyUrl = 'https://api.allorigins.win/raw?url=';
+            const target = 'https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json';
+            const response = await axios.get(proxyUrl + encodeURIComponent(target), {
+                timeout: 15000
+            });
+            return response.data;
+        },
+        // মেথড ৩: Direct (Headers সহ)
+        async () => {
+            const response = await axios.get(
+                'https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json',
+                {
+                    timeout: 10000,
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'application/json',
+                        'Referer': 'https://www.google.com/'
+                    }
+                }
+            );
+            return response.data;
+        }
+    ];
+
+    for (let attempt = 0; attempt < retries; attempt++) {
+        for (let i = 0; i < methods.length; i++) {
+            try {
+                console.log(`📡 চেষ্টা ${attempt + 1}/${retries}, মেথড ${i + 1}/${methods.length}...`);
+                const data = await methods[i]();
+                
+                let records = data?.data?.list || data?.list || [];
+                if (typeof data === 'string') {
+                    try { records = JSON.parse(data)?.data?.list || []; } catch (e) {}
+                }
+                
+                if (records.length > 0) {
+                    console.log(`✅ ${records.length} টি রিয়েল রেকর্ড পাওয়া গেছে`);
+                    return records.map(r => {
+                        const nums = String(r.number).split(',').map(n => n.trim());
+                        const last = nums[nums.length - 1] || '0';
+                        return {
+                            issue: String(r.issueNumber || r.issue || ''),
+                            number: String(last)
+                        };
+                    }).filter(r => r.issue);
+                }
+            } catch (e) {
+                console.log(`❌ ব্যর্থ:`, e.message);
             }
-        );
-        const records = res.data?.data?.list || [];
-        return records.map(r => {
-            const nums = String(r.number).split(',').map(n => n.trim());
-            const last = nums[nums.length - 1] || '0';
-            return {
-                issue: String(r.issueNumber || ''),
-                number: String(last)
-            };
-        }).filter(r => r.issue);
-    } catch (e) {
-        console.error('❌ Fetch error:', e.message);
-        return [];
+        }
+        if (attempt < retries - 1) {
+            console.log(`⏳ ${5 * (attempt + 1)} সেকেন্ড অপেক্ষা করছি...`);
+            await new Promise(r => setTimeout(r, 5000 * (attempt + 1)));
+        }
     }
+
+    console.log('❌ সব মেথড ব্যর্থ, কোনো ডাটা পাওয়া যায়নি');
+    return [];
 }
 
 // ======================== ডাটা সেভ ========================
@@ -102,7 +152,6 @@ async function checkAndRepairMissing() {
         
         if (missing.length === 0) return 0;
         
-        // WinGo থেকে মিসিং ডাটা রিকভারি
         const records = await fetchWingoData();
         let recovered = 0;
         for (const issue of missing) {
@@ -122,7 +171,7 @@ async function checkAndRepairMissing() {
 async function syncData() {
     console.log('🔄 সিঙ্ক শুরু:', new Date().toLocaleString('bn-BD', { timeZone: 'Asia/Dhaka' }));
     try {
-        const records = await fetchWingoData();
+        const records = await fetchWingoData(3);
         if (!records.length) {
             console.log('⚠️ কোনো ডাটা পাওয়া যায়নি');
             return;
@@ -141,7 +190,7 @@ async function syncData() {
 // ======================== API এন্ডপয়েন্ট ========================
 app.get('/', (req, res) => {
     res.json({
-        status: '🔄 WinGo Sync Running',
+        status: '🔄 WinGo Sync Running (Real Data)',
         lastSync: new Date().toLocaleString('bn-BD', { timeZone: 'Asia/Dhaka' })
     });
 });
