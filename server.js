@@ -10,85 +10,52 @@ const supabaseUrl = process.env.SUPABASE_URL || 'https://kbgzexismbfouhaueayv.su
 const supabaseKey = process.env.SUPABASE_KEY || 'your-key-here';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+// ✅ আপনার Google Apps Script Proxy URL (আপডেটেড)
+const PROXY_URL = 'https://script.google.com/macros/s/AKfycbx78dviVfJiwVkBKnY4LHtjqCN-FDseTISqUVyrp3W57nZDLkj10GiPzroLJYjkK4gZ/exec';
+
 const TABLE = 'wingo_records';
 const MAX_RECORDS = 500;
 
-// ======================== 🔥 Proxy + Retry দিয়ে WinGo ডাটা ফেচ ========================
-async function fetchWingoData(retries = 3) {
-    const methods = [
-        // মেথড ১: CorsProxy
-        async () => {
-            const proxyUrl = 'https://corsproxy.io/?';
-            const target = 'https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json';
-            const response = await axios.get(proxyUrl + encodeURIComponent(target), {
-                timeout: 15000,
-                headers: { 
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Accept': 'application/json'
-                }
-            });
-            return response.data;
-        },
-        // মেথড ২: AllOrigins
-        async () => {
-            const proxyUrl = 'https://api.allorigins.win/raw?url=';
-            const target = 'https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json';
-            const response = await axios.get(proxyUrl + encodeURIComponent(target), {
-                timeout: 15000
-            });
-            return response.data;
-        },
-        // মেথড ৩: Direct (Headers সহ)
-        async () => {
-            const response = await axios.get(
-                'https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json',
-                {
-                    timeout: 10000,
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': 'application/json',
-                        'Referer': 'https://www.google.com/'
-                    }
-                }
-            );
-            return response.data;
+// ======================== 🎯 Proxy দিয়ে ডাটা ফেচ ========================
+async function fetchWingoData() {
+    try {
+        console.log('📡 Google Proxy দিয়ে ডাটা আনা হচ্ছে...');
+        const response = await axios.get(PROXY_URL, {
+            timeout: 20000,
+            headers: { 'Accept': 'application/json' }
+        });
+        
+        let data = response.data;
+        if (typeof data === 'string') {
+            try { data = JSON.parse(data); } catch (e) {}
         }
-    ];
-
-    for (let attempt = 0; attempt < retries; attempt++) {
-        for (let i = 0; i < methods.length; i++) {
-            try {
-                console.log(`📡 চেষ্টা ${attempt + 1}/${retries}, মেথড ${i + 1}/${methods.length}...`);
-                const data = await methods[i]();
-                
-                let records = data?.data?.list || data?.list || [];
-                if (typeof data === 'string') {
-                    try { records = JSON.parse(data)?.data?.list || []; } catch (e) {}
-                }
-                
-                if (records.length > 0) {
-                    console.log(`✅ ${records.length} টি রিয়েল রেকর্ড পাওয়া গেছে`);
-                    return records.map(r => {
-                        const nums = String(r.number).split(',').map(n => n.trim());
-                        const last = nums[nums.length - 1] || '0';
-                        return {
-                            issue: String(r.issueNumber || r.issue || ''),
-                            number: String(last)
-                        };
-                    }).filter(r => r.issue);
-                }
-            } catch (e) {
-                console.log(`❌ ব্যর্থ:`, e.message);
-            }
+        
+        if (data.error) {
+            console.error('❌ Proxy Error:', data.error);
+            return [];
         }
-        if (attempt < retries - 1) {
-            console.log(`⏳ ${5 * (attempt + 1)} সেকেন্ড অপেক্ষা করছি...`);
-            await new Promise(r => setTimeout(r, 5000 * (attempt + 1)));
+        
+        const records = data?.data?.list || [];
+        
+        if (records.length === 0) {
+            console.log('⚠️ কোনো ডাটা পাওয়া যায়নি');
+            return [];
         }
+        
+        console.log(`✅ ${records.length} টি রিয়েল রেকর্ড পাওয়া গেছে`);
+        return records.map(r => {
+            const nums = String(r.number).split(',').map(n => n.trim());
+            const last = nums[nums.length - 1] || '0';
+            return {
+                issue: String(r.issueNumber || r.issue || ''),
+                number: String(last)
+            };
+        }).filter(r => r.issue);
+        
+    } catch (error) {
+        console.error('❌ Proxy Error:', error.message);
+        return [];
     }
-
-    console.log('❌ সব মেথড ব্যর্থ, কোনো ডাটা পাওয়া যায়নি');
-    return [];
 }
 
 // ======================== ডাটা সেভ ========================
@@ -171,7 +138,7 @@ async function checkAndRepairMissing() {
 async function syncData() {
     console.log('🔄 সিঙ্ক শুরু:', new Date().toLocaleString('bn-BD', { timeZone: 'Asia/Dhaka' }));
     try {
-        const records = await fetchWingoData(3);
+        const records = await fetchWingoData();
         if (!records.length) {
             console.log('⚠️ কোনো ডাটা পাওয়া যায়নি');
             return;
@@ -190,7 +157,7 @@ async function syncData() {
 // ======================== API এন্ডপয়েন্ট ========================
 app.get('/', (req, res) => {
     res.json({
-        status: '🔄 WinGo Sync Running (Real Data)',
+        status: '🔄 WinGo Sync Running (Google Proxy)',
         lastSync: new Date().toLocaleString('bn-BD', { timeZone: 'Asia/Dhaka' })
     });
 });
@@ -207,4 +174,5 @@ setInterval(syncData, 30000);
 app.listen(PORT, () => {
     console.log(`✅ সার্ভার চলছে: http://localhost:${PORT}`);
     console.log('🔄 অটো-সিঙ্ক চালু (প্রতি ৩০ সেকেন্ডে)');
+    console.log('📡 Proxy URL:', PROXY_URL);
 });
